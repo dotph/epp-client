@@ -17,5 +17,6 @@ Gem::Specification.new do |gem|
 
   gem.extra_rdoc_files = %w(LICENSE README.md)
 
-  gem.add_dependency 'libxml-ruby'
+  gem.required_ruby_version = '>= 3.0'
+  gem.add_dependency 'libxml-ruby', '~> 5.0'
 end
