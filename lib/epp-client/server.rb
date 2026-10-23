@@ -270,13 +270,19 @@ module EPP
         command  = EPP::Requests::Command.new(auth_tid, login)
         request  = EPP::Request.new(command)
 				
-				Rails.logger.info "request #{request}"
+        Rails.logger.info "request #{redact_passwords(request)}"
         response = send_recv_frame(request)
 
         Rails.logger.info "response #{response.code} #{response}"
 
         return true if response.code == 1000
         raise @error = ResponseError.new(response.code, response.message, response.to_xml)
+      end
+
+      # The login command carries the registrar password (and newPW when changing it):
+      # log the request with every pw/newPW element masked.
+      def redact_passwords(xml)
+        xml.to_s.gsub(%r{<((?:[\w-]+:)?(?:pw|newPW))>.*?</\1>}m, '<\1>[FILTERED]</\1>')
       end
 
       # Perform logout
