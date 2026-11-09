@@ -269,11 +269,7 @@ module EPP
         login    = EPP::Commands::Login.new(@tag, @passwd, @options)
         command  = EPP::Requests::Command.new(auth_tid, login)
         request  = EPP::Request.new(command)
-				
-				Rails.logger.info "request #{request}"
         response = send_recv_frame(request)
-
-        Rails.logger.info "response #{response.code} #{response}"
 
         return true if response.code == 1000
         raise @error = ResponseError.new(response.code, response.message, response.to_xml)
