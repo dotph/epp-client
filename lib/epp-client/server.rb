@@ -61,6 +61,9 @@ module EPP
     # @option options [String] :address_family 'AF_INET' or 'AF_INET6' or either of the
     #                          appropriate socket constants. Will cause connections to be
     #                          limited to this address family. Default try all addresses.
+    # @option options [Numeric] :timeout Seconds allowed for one whole connection (connect,
+    #                          greeting, login, command, logout). Exceeding it raises
+    #                          IO::TimeoutError. Default nil (no limit). Needs Ruby 3.2+.
 
     def initialize(tag, passwd, host, options = {})
       @tag, @passwd, @host = tag, passwd, host
@@ -161,7 +164,9 @@ module EPP
       begin
         yield
       ensure
-        logout!
+        # Once the deadline has passed the stream is out of step: a late reply to the
+        # command would be read as the logout reply. The connection is closed instead.
+        logout! unless deadline_passed?
       end
     end
 
@@ -180,10 +185,11 @@ module EPP
     #   end
     def connection
       @connection_errors = []
+      start_deadline
       addrinfo.each do |_,port,_,addr,_,_,_|
         retried = false
         begin
-          @conn = TCPSocket.new(addr, port)
+          @conn = open_socket(addr, port)
         rescue Errno::EINVAL => e
           if retried
             message = e.message.split(" - ")[1]
@@ -202,6 +208,7 @@ module EPP
         @sock.sync_close = true
 
         begin
+          apply_deadline
           @sock.connect
           @greeting = recv_frame  # Perform initial recv
 
@@ -242,6 +249,42 @@ module EPP
         else nil end
 
         Socket.getaddrinfo(@host, @options[:port], family, Socket::SOCK_STREAM)
+      end
+
+      # The :timeout option bounds a whole #connection (connect, greeting, login,
+      # command and logout) by one deadline. Without it nothing here changes, so
+      # Rubies older than 3.2 (no IO#timeout) keep working when it is unset.
+      def start_deadline
+        @deadline = @options[:timeout] && monotonic_now + @options[:timeout]
+      end
+
+      def open_socket(addr, port)
+        return TCPSocket.new(addr, port) unless @deadline
+
+        TCPSocket.new(addr, port, connect_timeout: remaining_time)
+      end
+
+      # Gives the next blocking socket operation only the time left before the
+      # deadline; the operation raises IO::TimeoutError when it runs out.
+      def apply_deadline
+        return unless @deadline
+
+        @conn.timeout = remaining_time
+      end
+
+      def remaining_time
+        remaining = @deadline - monotonic_now
+        raise IO::TimeoutError, "EPP deadline of #{@options[:timeout]}s exceeded" unless remaining > 0
+
+        remaining
+      end
+
+      def deadline_passed?
+        !!@deadline && monotonic_now >= @deadline
+      end
+
+      def monotonic_now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
       # @return [String] next transaction id
@@ -310,12 +353,14 @@ module EPP
       # @return [Integer] number of bytes written
       def send_frame(xml)
         xml = xml.to_s.force_encoding('ASCII-8BIT') if xml.kind_of?(Request)
+        apply_deadline
         @sock.write([xml.size + HEADER_LEN].pack("N") + xml)
       end
 
       # Receive XML frame
       # @return [String] XML response
       def recv_frame
+        apply_deadline
         header = @sock.read(HEADER_LEN)
 
         if header.nil? && @sock.eof?
@@ -326,6 +371,7 @@ module EPP
           len = header.unpack('N')[0]
 
           raise ServerError, "Bad frame header from server, should be greater than #{HEADER_LEN}" unless len > HEADER_LEN
+          apply_deadline
           @sock.read(len - HEADER_LEN)
         end
       end
